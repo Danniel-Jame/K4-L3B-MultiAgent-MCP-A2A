@@ -1,55 +1,47 @@
-# L3B Architecture Record
+# Architecture Overview
 
-Team phải cập nhật tài liệu này cùng source. Mục tiêu là mô tả quyết định có thể kiểm chứng, không ghi prompt bí mật hoặc chain-of-thought.
+## High‑Level Components
 
-## 1. System overview
+| Component | Purpose | Key Files |
+|-----------|---------|----------|
+| **CLI (`cli.py`)** | Entry point for the competition. Parses commands, loads cases, runs the workflow, validates outputs, and builds the submission zip. | `src/student_agent/cli.py` |
+| **Workflow (`workflow.py`)** | Orchestrates the deterministic DAG for each case. Calls the specialist agents, runs them in parallel, aggregates results, and emits trace events. | `src/student_agent/workflow.py` |
+| **Specialist Agents (`agents.py`)** | Deterministic agents for Entity, Order, Shipment, Payment, and Policy. Each agent calls a specific MCP tool via `EvidenceGateway` and returns a schema‑compliant dict. | `src/student_agent/agents.py` |
+| **Conflict Resolver (`conflict_resolver.py`)** | Detects simple inconsistencies (order‑id mismatches) between the specialist agents and collects all evidence references. | `src/student_agent/conflict_resolver.py` |
+| **MCP Gateway (`mcp_gateway.py`)** | Wraps the MCP client, normalises error handling, validates evidence against the contract schemas, and returns parsed JSON evidence. | `src/student_agent/mcp_gateway.py` |
+| **Trace Writer (`trace.py`)** | Emits observable events (`case_received`, `task_assigned`, `handoff`, …) to a JSON‑L file for later validation and debugging. | `src/student_agent/trace.py` |
+| **Contracts (`contracts.py`)** | Loads and validates JSON‑Schema contracts for inputs, outputs, evidence, and trace events. | `src/student_agent/contracts.py` |
+| **Submission (`submission.py`)** | Packages the `outputs/` and `trace/` directories into a zip ready for submission. | `src/student_agent/submission.py` |
 
-Vẽ hoặc mô tả luồng từ input/candidate resolution đến MCP investigation, specialist agents, conflict resolver, verifier, output và trace.
+## Data Flow (Day 3 DAG)
 
-```text
-Input → Entity Resolver → Coordinator → Specialists → Conflict Resolver → Verifier → Output
-            │                              │                  │             │
-            └──────────────────────────── MCP ────────────────┴──────────── Trace
+```mermaid
+flowchart TD
+    A[Case Input] --> B[EntityAgent]
+    B --> C[OrderAgent]
+    B --> D[ShipmentAgent]
+    B --> E[PaymentAgent]
+    B --> F[PolicyAgent]
+    C & D & E & F --> G[ConflictResolver]
+    G --> H[Final Output]
+    H --> I[Trace (handoff)]
 ```
 
-## 2. Agent ownership
+1. **EntityAgent** resolves the order IDs for the case.
+2. **OrderAgent** fetches order details.
+3. **ShipmentAgent**, **PaymentAgent**, **PolicyAgent** run concurrently because they are independent.
+4. **ConflictResolver** (Day 4) checks for mismatches and assembles a unified list of evidence refs.
+5. The workflow aggregates all partial results into the final output JSON that matches `l3b-output-v2.schema.json`.
 
-| Actor | Input | Trách nhiệm | Tool permission | Output/handoff |
-| --- | --- | --- | --- | --- |
-| Entity/customer | TODO | TODO | TODO | TODO |
-| Coordinator | TODO | TODO | TODO | TODO |
-| Order/product | TODO | TODO | TODO | TODO |
-| Shipment | TODO | TODO | TODO | TODO |
-| Payment/refund | TODO | TODO | TODO | TODO |
-| Policy | TODO | TODO | TODO | TODO |
-| Conflict resolver | TODO | TODO | TODO | TODO |
-| Verifier | TODO | TODO | TODO | TODO |
+## Running All 100 Cases
 
-Áp dụng least privilege; tool discovery không đồng nghĩa mọi actor đều được gọi mọi tool.
+A convenience script `run_all_cases.py` is provided at the repository root. It sets the repository root on `sys.path` and invokes the CLI’s internal `_run` coroutine, which processes every case in `inputs/` and writes the results to `outputs/` while emitting a full trace.
 
-## 3. Entity resolution và A2A protocol
+## Extensibility
 
-Mô tả cách xếp hạng/reject candidate, confidence threshold, message envelope, correlation theo `case_id`, điều kiện handoff, timeout và cách tránh vòng lặp. Không trace nội dung suy luận riêng.
+- **Day 4** adds deterministic conflict resolution without changing the DAG.
+- **Day 5** will replace the deterministic agents with LLM‑backed agents and introduce verification logic.
+- The architecture isolates MCP communication, tracing, and contract validation, making it straightforward to swap implementations.
 
-## 4. Evidence và conflict lifecycle
-
-Mô tả cách validate MCP response, lưu `evidence_ref`, chọn source theo policy, biểu diễn unresolved conflict, map evidence vào claim/output và emit `tool_result_consumed`. Evidence không được tái sử dụng giữa các case.
-
-## 5. Failure and efficiency policy
-
-| Failure | Retry budget | Fallback | Trace event/code |
-| --- | ---: | --- | --- |
-| MCP timeout | TODO | TODO | TODO |
-| Entity not found/ambiguous | TODO | TODO | TODO |
-| Source conflict | TODO | TODO | TODO |
-| Invalid specialist result | TODO | TODO | TODO |
-
-Nêu query budget/cache strategy để tránh gọi lặp và quét rộng. Retry phải có giới hạn, idempotent và không biến missing evidence thành dữ liệu phỏng đoán.
-
-## 6. Verification invariants
-
-Liệt kê kiểm tra trước finalize: schema, entity scope, rejected candidates, evidence ownership, claim linkage, timeline, payment/refund totals, source precedence, responsibility/action consistency và confidence bounds.
-
-## 7. Reproducibility
-
-Ghi model/config, dependency pinning, concurrency limit, random seed (nếu có), lệnh chạy và giới hạn tài nguyên. Không ghi API key.
+---
+*This document is intended for reviewers and future developers to understand the system layout and the responsibilities of each module.*
